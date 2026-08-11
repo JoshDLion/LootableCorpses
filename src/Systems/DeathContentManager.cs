@@ -33,6 +33,7 @@ namespace DeathCorpses.Systems
 
         private ICoreServerAPI _sapi = null!;
         private readonly HashSet<string> _knownCorpseIds = new();
+        private readonly Dictionary<string, string> _corpseFilesById = new();
 
         private record DeathRecapData(
             EnumDamageType DamageType,
@@ -82,6 +83,9 @@ namespace DeathCorpses.Systems
             string basePath = _sapi.GetOrCreateDataPath(
                 Path.Combine("ModData", _sapi.World.SavegameIdentifier, Mod.Info.ModID));
 
+            _knownCorpseIds.Clear();
+            _corpseFilesById.Clear();
+
             if (!Directory.Exists(basePath)) return;
 
             int oldVersionCount = 0;
@@ -100,7 +104,11 @@ namespace DeathCorpses.Systems
                         else currentVersionCount++;
 
                         string? id = tree.GetString("corpseId");
-                        if (id != null) _knownCorpseIds.Add(id);
+                        if (id != null)
+                        {
+                            _knownCorpseIds.Add(id);
+                            _corpseFilesById[id] = file;
+                        }
                     }
                     catch { }
                 }
@@ -178,7 +186,7 @@ namespace DeathCorpses.Systems
                 return;
             }
 
-            var corpseEntity = CreateCorpseEntity(byPlayer);
+            var corpseEntity = CreateCorpseEntity(byPlayer, damageSource);
             if (corpseEntity.Inventory != null && !corpseEntity.Inventory.Empty)
             {
                 if (Core.Config.RandomCorpse)
@@ -261,7 +269,7 @@ namespace DeathCorpses.Systems
             }
         }
 
-        private EntityPlayerCorpse CreateCorpseEntity(IServerPlayer byPlayer)
+        private EntityPlayerCorpse CreateCorpseEntity(IServerPlayer byPlayer, DamageSource damageSource)
         {
             var entityType = _sapi.World.GetEntityType(new AssetLocation(Constants.ModId, "deathcorpses"));
 
@@ -274,6 +282,11 @@ namespace DeathCorpses.Systems
             corpse.OwnerName = byPlayer.PlayerName;
             corpse.CreationTime = _sapi.World.Calendar.TotalHours;
             corpse.CreationRealDatetime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            corpse.DeathDamageType = damageSource?.Type ?? EnumDamageType.Gravity;
+            corpse.DeathDamageSource = damageSource?.Source ?? EnumDamageSource.Unknown;
+            corpse.DeathKillerName = damageSource?.CauseEntity?.GetName()
+                                  ?? damageSource?.SourceEntity?.GetName()
+                                  ?? "";
 
             corpse.Inventory = TakeContentFromPlayer(byPlayer);
 
@@ -286,6 +299,7 @@ namespace DeathCorpses.Systems
             corpse.ServerPos.SetPos(pos);
             corpse.Pos.SetPos(pos);
             corpse.World = _sapi.World;
+            corpse.BindInventoryEvents();
 
             return corpse;
         }
@@ -768,13 +782,7 @@ namespace DeathCorpses.Systems
 
             for (int i = files.Length - 1; i > Core.Config.MaxCorpsesSavedPerPlayer - 2; i--)
             {
-                try
-                {
-                    string? oldId = LoadCorpseId(files[i]);
-                    if (oldId != null) _knownCorpseIds.Remove(oldId);
-                }
-                catch { }
-                File.Delete(files[i]);
+                DeleteCorpseSaveFile(files[i]);
             }
 
             var tree = new TreeAttribute();
@@ -787,8 +795,9 @@ namespace DeathCorpses.Systems
 
             string name = $"inventory-{DateTime.Now:yyyy-MM-dd-HH-mm-ss}.dat";
             string filePath = $"{path}/{name}";
-            File.WriteAllBytes(filePath, tree.ToBytes());
+            WriteTreeAtomically(filePath, tree);
             _knownCorpseIds.Add(corpseId);
+            _corpseFilesById[corpseId] = filePath;
             return filePath;
         }
 
@@ -820,10 +829,18 @@ namespace DeathCorpses.Systems
             try
             {
                 string? id = LoadCorpseId(filePath);
-                if (id != null) _knownCorpseIds.Remove(id);
+                if (id != null)
+                {
+                    _knownCorpseIds.Remove(id);
+                    _corpseFilesById.Remove(id);
+                }
             }
             catch { }
-            File.Delete(filePath);
+
+            if (File.Exists(filePath))
+            {
+                File.Delete(filePath);
+            }
         }
 
         /// <summary>
@@ -834,10 +851,70 @@ namespace DeathCorpses.Systems
         {
             _knownCorpseIds.Remove(corpseId);
 
+            if (_corpseFilesById.TryGetValue(corpseId, out string? cachedFile))
+            {
+                _corpseFilesById.Remove(corpseId);
+                if (File.Exists(cachedFile))
+                {
+                    File.Delete(cachedFile);
+                    Mod.Logger.Notification($"Deleted corpse save file for corpseId {corpseId}");
+                }
+                return;
+            }
+
+            string? file = FindCorpseSaveFileByCorpseId(corpseId);
+            if (file == null)
+            {
+                return;
+            }
+
+            _corpseFilesById.Remove(corpseId);
+            File.Delete(file);
+            Mod.Logger.Notification($"Deleted corpse save file for corpseId {corpseId}");
+        }
+
+        /// <summary>
+        /// Rewrites the persistent corpse inventory after partial looting. This prevents
+        /// /dc corpse get (or a server restart) from restoring items that were already taken.
+        /// </summary>
+        public bool UpdateCorpseInventoryByCorpseId(string corpseId, InventoryGeneric inventory, Vec3d gravePos)
+        {
+            string? filePath;
+            if (!_corpseFilesById.TryGetValue(corpseId, out filePath) || !File.Exists(filePath))
+            {
+                filePath = FindCorpseSaveFileByCorpseId(corpseId);
+                if (filePath == null)
+                {
+                    return false;
+                }
+                _corpseFilesById[corpseId] = filePath;
+            }
+
+            try
+            {
+                var tree = LoadAndMigrateTree(filePath);
+                inventory.ToTreeAttributes(tree);
+                tree.SetInt("version", CurrentCorpseVersion);
+                tree.SetInt("graveX", (int)gravePos.X);
+                tree.SetInt("graveY", (int)gravePos.Y);
+                tree.SetInt("graveZ", (int)gravePos.Z);
+                tree.SetString("corpseId", corpseId);
+                WriteTreeAtomically(filePath, tree);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Mod.Logger.Error($"Failed to persist partially looted corpse {corpseId}: {ex}");
+                return false;
+            }
+        }
+
+        private string? FindCorpseSaveFileByCorpseId(string corpseId)
+        {
             string basePath = _sapi.GetOrCreateDataPath(
                 Path.Combine("ModData", _sapi.World.SavegameIdentifier, Mod.Info.ModID));
 
-            if (!Directory.Exists(basePath)) return;
+            if (!Directory.Exists(basePath)) return null;
 
             foreach (string playerDir in Directory.GetDirectories(basePath))
             {
@@ -847,20 +924,26 @@ namespace DeathCorpses.Systems
                     {
                         var tree = new TreeAttribute();
                         tree.FromBytes(File.ReadAllBytes(file));
-                        string? id = tree.GetString("corpseId");
-                        if (id == corpseId)
+                        if (tree.GetString("corpseId") == corpseId)
                         {
-                            File.Delete(file);
-                            Mod.Logger.Notification($"Deleted corpse save file for corpseId {corpseId}");
-                            return;
+                            return file;
                         }
                     }
                     catch
                     {
-                        // Skip corrupted files
+                        // Skip corrupted files.
                     }
                 }
             }
+
+            return null;
+        }
+
+        private static void WriteTreeAtomically(string filePath, TreeAttribute tree)
+        {
+            string tempPath = filePath + ".tmp";
+            File.WriteAllBytes(tempPath, tree.ToBytes());
+            File.Move(tempPath, filePath, true);
         }
 
         public void UpdateCorpsePosition(string filePath, Vec3d newPos)
@@ -874,7 +957,14 @@ namespace DeathCorpses.Systems
             tree.SetInt("graveX", (int)newPos.X);
             tree.SetInt("graveY", (int)newPos.Y);
             tree.SetInt("graveZ", (int)newPos.Z);
-            File.WriteAllBytes(filePath, tree.ToBytes());
+            WriteTreeAtomically(filePath, tree);
+
+            string? id = tree.GetString("corpseId");
+            if (id != null)
+            {
+                _knownCorpseIds.Add(id);
+                _corpseFilesById[id] = filePath;
+            }
         }
 
         public class CorpseRecord

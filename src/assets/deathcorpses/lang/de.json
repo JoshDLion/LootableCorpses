@@ -1,6 +1,8 @@
 {
     "item-creature-deathcorpses": "Spielerleiche",
     "blockhelp-collect": "Einsammeln",
+    "blockhelp-loot": "Loot",
+    "blockhelp-quickloot": "Quick loot",
     "game:ingameerror-not-corpse-owner": "Das ist nicht deine Leiche!",
     "corpse-free": "Frei für jeden",
     "corpse-created(date={0})": "Erstellt {0}",

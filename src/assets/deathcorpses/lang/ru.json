@@ -1,6 +1,8 @@
 {
     "item-creature-deathcorpses": "Труп игрока",
     "blockhelp-collect": "Собрать",
+    "blockhelp-loot": "Loot",
+    "blockhelp-quickloot": "Quick loot",
     "game:ingameerror-not-corpse-owner": "Это не ваш труп!",
     "corpse-free": "Доступен для всех",
     "corpse-created(date={0})": "Создано: {0}",

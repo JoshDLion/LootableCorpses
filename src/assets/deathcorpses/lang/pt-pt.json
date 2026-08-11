@@ -1,6 +1,8 @@
 {
     "item-creature-deathcorpses": "Cadáver do jogador",
     "blockhelp-collect": "Coletar",
+    "blockhelp-loot": "Loot",
+    "blockhelp-quickloot": "Quick loot",
     "game:ingameerror-not-corpse-owner": "Este não é o seu cadáver!",
     "corpse-free": "Gratuito para todos",
     "corpse-created(date={0})": "Criado {0}",

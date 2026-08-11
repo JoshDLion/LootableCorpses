@@ -1,6 +1,8 @@
 {
     "item-creature-deathcorpses": "Cadavre de joueur",
     "blockhelp-collect": "Récupérer",
+    "blockhelp-loot": "Loot",
+    "blockhelp-quickloot": "Quick loot",
     "game:ingameerror-not-corpse-owner": "Ce n'est pas votre corps !",
     "corpse-free": "Tout le monde peut récupérer le butin",
     "corpse-created(date={0})": "Date du décès : {0}",

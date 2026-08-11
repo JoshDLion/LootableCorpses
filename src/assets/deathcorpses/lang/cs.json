@@ -1,6 +1,8 @@
 {
     "item-creature-deathcorpses": "Tělo hráče",
     "blockhelp-collect": "Sebrat",
+    "blockhelp-loot": "Loot",
+    "blockhelp-quickloot": "Quick loot",
     "game:ingameerror-not-corpse-owner": "Tohle není tvoje mrtvola!",
     "corpse-free": "Pro všechny zdarma",
     "corpse-created(date={0})": "Vytvořeno {0}",

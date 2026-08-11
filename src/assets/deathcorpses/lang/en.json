@@ -1,6 +1,8 @@
 {
   "item-creature-deathcorpses": "Player corpse",
   "blockhelp-collect": "Collect",
+  "blockhelp-loot": "Loot",
+  "blockhelp-quickloot": "Quick loot",
 
   "game:ingameerror-not-corpse-owner": "This is not your corpse!",
   "corpse-free": "Free for all",

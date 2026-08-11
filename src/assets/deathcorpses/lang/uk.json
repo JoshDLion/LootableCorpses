@@ -1,6 +1,8 @@
 {
     "item-creature-deathcorpses": "Тіло гравця",
     "blockhelp-collect": "Підібрати",
+    "blockhelp-loot": "Loot",
+    "blockhelp-quickloot": "Quick loot",
     "game:ingameerror-not-corpse-owner": "Це не ваше тіло!",
     "corpse-free": "Доступно для всіх",
     "corpse-created(date={0})": "Створено {0}",

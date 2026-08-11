@@ -1,12 +1,17 @@
 {
   "type": "code",
   "side": "universal",
-  "name": "Death Corpses",
+  "name": "Lootable Corpses",
   "modid": "deathcorpses",
-  "version": "2.8.1",
-  "website": "https://github.com/Bisa/DeathCorpses",
-  "authors": [ "DArkHekRoMaNT", "Marzz2006", "Bisa" ],
-  "description": "Run back and collect items from your corpse if you die.",
+  "version": "2.9.0",
+  "website": "https://github.com/JoshDLion/LootableCorpses",
+  "authors": [
+    "DArkHekRoMaNT",
+    "Marzz2006",
+    "Bisa",
+    "JoshDLion"
+  ],
+  "description": "DeathCorpses fork with openable, partially lootable corpse inventories.",
   "dependencies": {
     "game": "0.0.0"
   }

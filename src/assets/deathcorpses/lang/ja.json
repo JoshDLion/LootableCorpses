@@ -1,6 +1,8 @@
 {
     "item-creature-deathcorpses": "Player corpse(兵どもが夢の跡)",
     "blockhelp-collect": "回収",
+    "blockhelp-loot": "Loot",
+    "blockhelp-quickloot": "Quick loot",
     "game:ingameerror-not-corpse-owner": "これはあなたのお墓ではありません！",
     "corpse-free": "ご自由にどうぞ。",
     "corpse-created(date={0})": "{0}に作成されました。",

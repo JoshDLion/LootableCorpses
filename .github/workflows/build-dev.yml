@@ -1,0 +1,38 @@
+name: Build dev artifact
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - lootable-2.9.0
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: cachix/install-nix-action@v27
+
+      - name: Build combined VS 1.21 + 1.22 zip
+        run: nix build .#zip
+
+      - name: Copy artifact
+        run: |
+          mkdir -p artifacts
+          target_name="$(basename "$(readlink -f result)")"
+          cp -L result "artifacts/${target_name}"
+          ls -lh artifacts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lootable-corpses-dev
+          path: artifacts/*.zip
+          if-no-files-found: error

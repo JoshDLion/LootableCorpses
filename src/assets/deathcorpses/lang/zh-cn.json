@@ -1,6 +1,8 @@
 {
     "item-creature-deathcorpses": "玩家尸体",
     "blockhelp-collect": "取回",
+    "blockhelp-loot": "Loot",
+    "blockhelp-quickloot": "Quick loot",
     "game:ingameerror-not-corpse-owner": "这不是你的尸体！",
     "corpse-free": "对所有人开放",
     "corpse-created(date={0})": "已创建 {0}",

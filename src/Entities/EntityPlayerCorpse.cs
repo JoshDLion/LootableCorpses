@@ -1,4 +1,4 @@
-using DeathCorpses.Lib.UI;
+using DeathCorpses;
 using DeathCorpses.Lib.Utils;
 using DeathCorpses.Systems;
 using System;
@@ -15,17 +15,15 @@ namespace DeathCorpses.Entities
 {
     public class EntityPlayerCorpse : EntityAgent
     {
+        private const int OpenInventoryPacketId = 1001;
+        private const double MaxLootDistanceSq = 49; // 7 blocks
+
         private ILogger? _modLogger;
-        private long _lastInteractMs;
-        private HudCircleRenderer _interactRingRenderer = null!;
-
-        private float SecondsPassed { get; set; }
-
-        private long LastInteractPassedMs
-        {
-            get { return World.ElapsedMilliseconds - _lastInteractMs; }
-            set { _lastInteractMs = value; }
-        }
+        private GuiDialogCorpseInventory? _corpseDialog;
+        private long _lastOpenAttemptMs;
+        private bool _inventoryEventsBound;
+        private bool _persistUpdateQueued;
+        private bool _removing;
 
         public ILogger ModLogger => _modLogger ?? Api.Logger;
         public InventoryGeneric? Inventory { get; set; }
@@ -58,6 +56,24 @@ namespace DeathCorpses.Entities
         {
             get => WatchedAttributes.GetInt("waypointID", -1);
             set => WatchedAttributes.SetInt("waypointID", value);
+        }
+
+        public EnumDamageType DeathDamageType
+        {
+            get => (EnumDamageType)WatchedAttributes.GetInt("deathDamageType", (int)EnumDamageType.Gravity);
+            set => WatchedAttributes.SetInt("deathDamageType", (int)value);
+        }
+
+        public EnumDamageSource DeathDamageSource
+        {
+            get => (EnumDamageSource)WatchedAttributes.GetInt("deathDamageSource", (int)EnumDamageSource.Unknown);
+            set => WatchedAttributes.SetInt("deathDamageSource", (int)value);
+        }
+
+        public string DeathKillerName
+        {
+            get => WatchedAttributes.GetString("deathKillerName", "");
+            set => WatchedAttributes.SetString("deathKillerName", value ?? "");
         }
 
         public bool IsFree
@@ -93,16 +109,7 @@ namespace DeathCorpses.Entities
         public override void Initialize(EntityProperties properties, ICoreAPI api, long InChunkIndex3d)
         {
             base.Initialize(properties, api, InChunkIndex3d);
-
             _modLogger = ModSystemRegistry.Get<Core>().Mod.Logger;
-
-            if (api is ICoreClientAPI capi)
-            {
-                _interactRingRenderer = new HudCircleRenderer(capi, new HudCircleSettings
-                {
-                    Color = 0xFF9500
-                });
-            }
         }
 
         public override void OnEntityLoaded()
@@ -112,7 +119,36 @@ namespace DeathCorpses.Entities
             {
                 Inventory.Api = Api;
                 Inventory.ResolveBlocksOrItems();
+                BindInventoryEvents();
             }
+        }
+
+        /// <summary>
+        /// Called both for newly-created corpses and corpses restored from chunk data.
+        /// The inventory is loot-only: players may take items but may not use corpses as storage.
+        /// </summary>
+        public void BindInventoryEvents()
+        {
+            if (Inventory == null || _inventoryEventsBound)
+            {
+                return;
+            }
+
+            Inventory.Api = Api;
+            Inventory.PutLocked = true;
+            Inventory.SlotModified += OnInventorySlotModified;
+            _inventoryEventsBound = true;
+        }
+
+        private void UnbindInventoryEvents()
+        {
+            if (Inventory == null || !_inventoryEventsBound)
+            {
+                return;
+            }
+
+            Inventory.SlotModified -= OnInventorySlotModified;
+            _inventoryEventsBound = false;
         }
 
         public override bool ShouldReceiveDamage(DamageSource damageSource, float damage)
@@ -134,29 +170,14 @@ namespace DeathCorpses.Entities
         {
             base.OnGameTick(dt);
 
-            if (LastInteractPassedMs > 300)
-            {
-                if (SecondsPassed != 0 && Api.Side == EnumAppSide.Client)
-                {
-                    _interactRingRenderer.CircleVisible = false;
-                }
-                SecondsPassed = 0;
-            }
-            else
-            {
-                SecondsPassed += dt;
-                if (Api.Side == EnumAppSide.Client)
-                {
-                    _interactRingRenderer.CircleProgress = SecondsPassed / Core.Config.CorpseCollectionTime;
-                    if (SecondsPassed > Core.Config.CorpseCollectionTime)
-                    {
-                        ForceUpdateSecondsPassedOnServer();
-                    }
-                }
-            }
-
             if (Api is ICoreClientAPI capi)
             {
+                if (_corpseDialog?.IsOpened() == true &&
+                    (Inventory == null || Inventory.Empty || capi.World.Player.Entity.Pos.SquareDistanceTo(Pos) > MaxLootDistanceSq))
+                {
+                    _corpseDialog.TryClose();
+                }
+
                 if (OwnerUID == capi.World.Player.PlayerUID && Api.World.Rand.NextDouble() < 0.3)
                 {
                     capi.World.SpawnParticles(new SimpleParticleProperties()
@@ -176,112 +197,230 @@ namespace DeathCorpses.Entities
             }
         }
 
-        private void ForceUpdateSecondsPassedOnServer()
-        {
-            if (Api is ICoreClientAPI capi)
-            {
-                capi.Network.SendEntityPacket(EntityId, 141325, [(byte)SecondsPassed]);
-            }
-        }
-
         public override void OnReceivedClientPacket(IServerPlayer player, int packetid, byte[] data)
         {
+            // Keep the same ordering used by vanilla entity inventories (e.g. traders):
+            // first allow the base entity to process its packets, then route inventory packets.
             base.OnReceivedClientPacket(player, packetid, data);
 
-            if (packetid == 141325)
+            if (Inventory == null)
             {
-                if (data?.Length > 0 && data[0] > SecondsPassed)
-                {
-                    SecondsPassed = data[0];
-                }
+                return;
             }
+
+            // Built-in inventory packets use IDs below 1000. Let Vintage Story's inventory
+            // network utility validate and apply each move on the authoritative server inventory.
+            if (packetid < 1000)
+            {
+                if (CanLoot(player) && IsInLootRange(player) && Inventory.HasOpened(player))
+                {
+                    Inventory.InvNetworkUtil.HandleClientPacket(player, packetid, data);
+                }
+                return;
+            }
+
+            if (packetid == OpenInventoryPacketId)
+            {
+                if (!CanLoot(player))
+                {
+                    player.SendIngameError("", Lang.Get("game:ingameerror-not-corpse-owner"));
+                    return;
+                }
+
+                if (!IsInLootRange(player))
+                {
+                    return;
+                }
+
+                player.InventoryManager.OpenInventory(Inventory);
+                return;
+            }
+
         }
 
         public override void OnInteract(EntityAgent byEntity, ItemSlot itemslot, Vec3d hitPosition, EnumInteractMode mode)
         {
-            if (byEntity is EntityPlayer entityPlayer)
+            if (mode != EnumInteractMode.Interact || byEntity is not EntityPlayer entityPlayer)
             {
-                IPlayer byPlayer = World.PlayerByUid(entityPlayer.PlayerUID);
-                if (byPlayer != null)
-                {
-                    if (!CanCollect(byPlayer))
-                    {
-                        if (byPlayer is IServerPlayer sp)
-                        {
-                            sp.SendIngameError("", Lang.Get("game:ingameerror-not-corpse-owner"));
-                        }
-                    }
-                    else
-                    {
-                        if (Api.Side == EnumAppSide.Server)
-                        {
-                            if (Inventory == null || Inventory.Count == 0)
-                            {
-                                string format = "{0} at {1} is empty and will be removed immediately, id {3}";
-                                string msg = string.Format(format, GetName(), SidedPos.XYZ.RelativePos(Api), byPlayer.PlayerName, EntityId);
-                                ModLogger.Notification(msg);
-                                Die();
-                            }
-                            else if (SecondsPassed > Core.Config.CorpseCollectionTime)
-                            {
-                                if (Core.Config.RemoveWaypointOnCollect)
-                                {
-                                    DeathContentManager.RemoveDeathPoint(byPlayer.Entity, this);
-                                }
-                                Collect(byPlayer);
-                                
-                            }
-                        }
-
-                        LastInteractPassedMs = World.ElapsedMilliseconds;
-                        return;
-                    }
-                }
+                base.OnInteract(byEntity, itemslot, hitPosition, mode);
+                return;
             }
 
-            base.OnInteract(byEntity, itemslot, hitPosition, mode);
-        }
-
-        private bool CanCollect(IPlayer byPlayer)
-        {
-            if (byPlayer.Entity.Alive)
+            IPlayer? byPlayer = World.PlayerByUid(entityPlayer.PlayerUID);
+            if (byPlayer == null)
             {
-                if (byPlayer.PlayerUID == OwnerUID ||
-                    byPlayer.WorldData.CurrentGameMode == EnumGameMode.Creative ||
-                    IsFree)
-                {
-                    return true;
-                }
+                return;
             }
 
-            return false;
+            if (!CanLoot(byPlayer))
+            {
+                if (byPlayer is IServerPlayer sp)
+                {
+                    sp.SendIngameError("", Lang.Get("game:ingameerror-not-corpse-owner"));
+                }
+                return;
+            }
+
+            if (Inventory == null || Inventory.Empty)
+            {
+                if (Api.Side == EnumAppSide.Server)
+                {
+                    RemoveEmptyCorpse();
+                }
+                return;
+            }
+
+            // Shift + right click is the quick-loot path. EntityControls.ShiftKey is the
+            // dedicated mouse-interaction modifier, separate from the remappable Sneak action.
+            if (byEntity.Controls.ShiftKey)
+            {
+                if (Api.Side == EnumAppSide.Server)
+                {
+                    QuickLoot(byPlayer);
+                }
+                return;
+            }
+
+            // OnInteract can repeat while right mouse is held. Only the client opens the GUI,
+            // and this short throttle prevents duplicate dialogs/packets before it gains focus.
+            if (Api is ICoreClientAPI capi &&
+                _corpseDialog?.IsOpened() != true &&
+                World.ElapsedMilliseconds - _lastOpenAttemptMs > 250)
+            {
+                _lastOpenAttemptMs = World.ElapsedMilliseconds;
+                OpenCorpseInventory(capi, byPlayer);
+            }
         }
 
-        private void Collect(IPlayer byPlayer)
+        private void OpenCorpseInventory(ICoreClientAPI capi, IPlayer byPlayer)
         {
-            if (Inventory != null)
+            if (Inventory == null || Inventory.Empty)
             {
-                foreach (var slot in Inventory)
-                {
-                    if (slot.Empty)
-                    {
-                        continue;
-                    }
+                return;
+            }
 
-                    if (!byPlayer.InventoryManager.TryGiveItemstack(slot.Itemstack))
-                    {
-                        Api.World.SpawnItemEntity(slot.Itemstack, byPlayer.Entity.ServerPos.XYZ.AddCopy(0, 1, 0));
-                    }
+            BindInventoryEvents();
+            byPlayer.InventoryManager.OpenInventory(Inventory);
+            capi.Network.SendEntityPacket(EntityId, OpenInventoryPacketId);
+
+            _corpseDialog = new GuiDialogCorpseInventory(Inventory, this, capi);
+            _corpseDialog.OnClosed += () => _corpseDialog = null;
+            _corpseDialog.TryOpen();
+        }
+
+        private void QuickLoot(IPlayer byPlayer)
+        {
+            if (Inventory == null || Inventory.Empty)
+            {
+                return;
+            }
+
+            bool movedAnything = false;
+
+            foreach (ItemSlot slot in Inventory)
+            {
+                if (slot.Empty || slot.Itemstack == null)
+                {
+                    continue;
+                }
+
+                ItemStack stack = slot.Itemstack;
+                int before = stack.StackSize;
+                bool acceptedWholeStack = byPlayer.InventoryManager.TryGiveItemstack(stack, true);
+
+                if (acceptedWholeStack)
+                {
                     slot.Itemstack = null;
                     slot.MarkDirty();
+                    movedAnything = true;
+                }
+                else if (stack.StackSize != before)
+                {
+                    // Some inventory implementations can accept only part of a stack. In that
+                    // case the source ItemStack is reduced in-place, so keep the remainder here.
+                    slot.MarkDirty();
+                    movedAnything = true;
+                }
+            }
+
+            if (movedAnything)
+            {
+                ModLogger.Notification($"{byPlayer.PlayerName} quick-looted {GetName()}, id {EntityId}");
+            }
+
+            if (Inventory.Empty)
+            {
+                RemoveEmptyCorpse();
+            }
+        }
+
+        private bool CanLoot(IPlayer byPlayer)
+        {
+            if (!byPlayer.Entity.Alive)
+            {
+                return false;
+            }
+
+            return byPlayer.PlayerUID == OwnerUID ||
+                   byPlayer.WorldData.CurrentGameMode == EnumGameMode.Creative ||
+                   IsFree;
+        }
+
+        private bool IsInLootRange(IPlayer player)
+        {
+            return player.Entity.Pos.SquareDistanceTo(Pos) <= MaxLootDistanceSq;
+        }
+
+        private void OnInventorySlotModified(int slotId)
+        {
+            if (Api.Side != EnumAppSide.Server || Inventory == null || _persistUpdateQueued || _removing)
+            {
+                return;
+            }
+
+            _persistUpdateQueued = true;
+            Api.Event.RegisterCallback((dt) =>
+            {
+                _persistUpdateQueued = false;
+                if (_removing || Inventory == null)
+                {
+                    return;
+                }
+
+                if (Inventory.Empty)
+                {
+                    RemoveEmptyCorpse();
+                    return;
+                }
+
+                ModSystemRegistry
+                    .Get<DeathContentManager>()
+                    .UpdateCorpseInventoryByCorpseId(CorpseId, Inventory, ServerPos.XYZ);
+            }, 100);
+        }
+
+        private void RemoveEmptyCorpse()
+        {
+            if (Api.Side != EnumAppSide.Server || Inventory == null || !Inventory.Empty || _removing)
+            {
+                return;
+            }
+
+            _removing = true;
+
+            if (Core.Config.RemoveWaypointOnCollect)
+            {
+                IPlayer? owner = World.PlayerByUid(OwnerUID);
+                if (owner?.Entity is EntityPlayer ownerEntity)
+                {
+                    DeathContentManager.RemoveDeathPoint(ownerEntity, this);
                 }
             }
 
             string msg = string.Format(
-                "{0} at {1} can be collected by {2}, id {3}",
+                "{0} at {1} was fully looted and will be removed, id {2}",
                 GetName(),
                 SidedPos.XYZ.RelativePos(Api),
-                byPlayer.PlayerName,
                 EntityId);
 
             ModLogger.Notification(msg);
@@ -290,19 +429,34 @@ namespace DeathCorpses.Entities
                 Api.BroadcastMessage(msg);
             }
 
-            if (CorpseId != null)
+            ModSystemRegistry.Get<DeathContentManager>().DeleteCorpseSaveByCorpseId(CorpseId);
+            Die(EnumDespawnReason.Removed);
+        }
+
+        public string GetDeathCauseDisplayName()
+        {
+            if (!string.IsNullOrWhiteSpace(DeathKillerName))
             {
-                ModSystemRegistry.Get<DeathContentManager>().DeleteCorpseSaveByCorpseId(CorpseId);
+                return DeathKillerName;
             }
 
-            Die();
+            string sourceKey = $"{Constants.ModId}:death-recap-source-{DeathDamageSource}";
+            string source = Lang.Get(sourceKey);
+            if (!string.IsNullOrWhiteSpace(source) && source != sourceKey)
+            {
+                return source;
+            }
+
+            return DeathDamageType.ToString();
         }
 
         public override void Die(EnumDespawnReason reason = EnumDespawnReason.Death, DamageSource? damageSourceForDeath = null)
         {
+            UnbindInventoryEvents();
+
             if (reason == EnumDespawnReason.Death && Inventory != null)
             {
-                Inventory.Api = Api; // fix strange null
+                Inventory.Api = Api;
                 Inventory.DropAll(SidedPos.XYZ.AddCopy(0, 1, 0));
             }
 
@@ -328,12 +482,13 @@ namespace DeathCorpses.Entities
 
         public override void OnEntityDespawn(EntityDespawnData despawn)
         {
-            base.OnEntityDespawn(despawn);
-
-            if (Api.Side == EnumAppSide.Client)
+            if (Api.Side == EnumAppSide.Client && _corpseDialog?.IsOpened() == true)
             {
-                _interactRingRenderer.CircleVisible = false;
+                _corpseDialog.TryClose();
             }
+
+            UnbindInventoryEvents();
+            base.OnEntityDespawn(despawn);
         }
 
         public override void ToBytes(BinaryWriter writer, bool forClient)
@@ -358,10 +513,12 @@ namespace DeathCorpses.Entities
 
                 Inventory = new InventoryGeneric(qslots, inventoryID, Api);
                 Inventory.FromTreeAttributes(WatchedAttributes);
+                Inventory.PutLocked = true;
 
                 if (Api != null)
                 {
                     Inventory.ResolveBlocksOrItems();
+                    BindInventoryEvents();
                 }
             }
         }
@@ -388,11 +545,20 @@ namespace DeathCorpses.Entities
 
         public override WorldInteraction[] GetInteractionHelp(IClientWorldAccessor world, EntitySelection es, IClientPlayer player)
         {
-            return [new WorldInteraction
-            {
-                ActionLangCode = $"{Constants.ModId}:blockhelp-collect",
-                MouseButton = EnumMouseButton.Right
-            }];
+            return
+            [
+                new WorldInteraction
+                {
+                    ActionLangCode = $"{Constants.ModId}:blockhelp-loot",
+                    MouseButton = EnumMouseButton.Right
+                },
+                new WorldInteraction
+                {
+                    ActionLangCode = $"{Constants.ModId}:blockhelp-quickloot",
+                    MouseButton = EnumMouseButton.Right,
+                    HotKeyCode = "shift"
+                }
+            ];
         }
 
         private static int GetRandomColor(Random rand)
