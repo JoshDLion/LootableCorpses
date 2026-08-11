@@ -288,7 +288,10 @@ namespace DeathCorpses.Systems
                                   ?? damageSource?.SourceEntity?.GetName()
                                   ?? "";
 
-            corpse.Inventory = TakeContentFromPlayer(byPlayer);
+            // Force the stable corpse ID before creating its inventory so every corpse gets
+            // a distinct network inventory identity.
+            string corpseId = corpse.CorpseId;
+            corpse.Inventory = TakeContentFromPlayer(byPlayer, corpseId);
 
             // Fix dancing corpse issue
             BlockPos floorPos = TryFindFloor(byPlayer.Entity.ServerPos.AsBlockPos);
@@ -299,7 +302,7 @@ namespace DeathCorpses.Systems
             corpse.ServerPos.SetPos(pos);
             corpse.Pos.SetPos(pos);
             corpse.World = _sapi.World;
-            corpse.BindInventoryEvents();
+            corpse.PrepareInventoryForNetworking();
 
             return corpse;
         }
@@ -421,9 +424,9 @@ namespace DeathCorpses.Systems
             return pos;
         }
 
-        private InventoryGeneric TakeContentFromPlayer(IServerPlayer byPlayer)
+        private InventoryGeneric TakeContentFromPlayer(IServerPlayer byPlayer, string corpseId)
         {
-            var inv = new InventoryGeneric(GetMaxCorpseSlots(byPlayer), $"deathcorpses-{byPlayer.PlayerUID}", _sapi);
+            var inv = new InventoryGeneric(GetMaxCorpseSlots(byPlayer), $"deathcorpses-{corpseId}", _sapi);
 
             int lastSlotId = 0;
             foreach (var invClassName in Core.Config.SaveInventoryTypes)

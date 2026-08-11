@@ -115,12 +115,33 @@ namespace DeathCorpses.Entities
         public override void OnEntityLoaded()
         {
             base.OnEntityLoaded();
-            if (Inventory != null)
+            PrepareInventoryForNetworking();
+        }
+
+        private string GetCorpseInventoryId()
+        {
+            // Every corpse is an independently openable inventory. Vintage Story requires
+            // concurrently openable inventories to have distinct IDs, so key it by corpse ID
+            // rather than only by player UID.
+            return $"deathcorpses-{CorpseId}";
+        }
+
+        /// <summary>
+        /// Finishes inventory initialization after entity deserialization. During FromBytes(),
+        /// Entity.Api may still be null; assigning Inventory.Api later is not enough because the
+        /// inventory network utility is only created by the constructor when an API is present,
+        /// or by LateInitialize().
+        /// </summary>
+        public void PrepareInventoryForNetworking()
+        {
+            if (Inventory == null || Api == null)
             {
-                Inventory.Api = Api;
-                Inventory.ResolveBlocksOrItems();
-                BindInventoryEvents();
+                return;
             }
+
+            Inventory.LateInitialize(GetCorpseInventoryId(), Api);
+            Inventory.PutLocked = true;
+            BindInventoryEvents();
         }
 
         /// <summary>
@@ -134,7 +155,6 @@ namespace DeathCorpses.Entities
                 return;
             }
 
-            Inventory.Api = Api;
             Inventory.PutLocked = true;
             Inventory.SlotModified += OnInventorySlotModified;
             _inventoryEventsBound = true;
@@ -299,9 +319,12 @@ namespace DeathCorpses.Entities
                 return;
             }
 
-            BindInventoryEvents();
-            byPlayer.InventoryManager.OpenInventory(Inventory);
+            PrepareInventoryForNetworking();
+
+            // Match vanilla entity-inventory ordering (traders): ask the server to open its
+            // inventory first, then register/open the matching client-side inventory.
             capi.Network.SendEntityPacket(EntityId, OpenInventoryPacketId);
+            byPlayer.InventoryManager.OpenInventory(Inventory);
 
             _corpseDialog = new GuiDialogCorpseInventory(Inventory, this, capi);
             _corpseDialog.OnClosed += () => _corpseDialog = null;
@@ -511,14 +534,16 @@ namespace DeathCorpses.Entities
                 string inventoryID = WatchedAttributes.GetString("invid");
                 int qslots = WatchedAttributes.GetInt("qslots", 0);
 
+                // Api may be null at this point during entity/chunk deserialization.
+                // PrepareInventoryForNetworking() will create/refresh InvNetworkUtil once the
+                // entity has a live API and will also migrate legacy per-player inventory IDs.
                 Inventory = new InventoryGeneric(qslots, inventoryID, Api);
                 Inventory.FromTreeAttributes(WatchedAttributes);
                 Inventory.PutLocked = true;
 
                 if (Api != null)
                 {
-                    Inventory.ResolveBlocksOrItems();
-                    BindInventoryEvents();
+                    PrepareInventoryForNetworking();
                 }
             }
         }
