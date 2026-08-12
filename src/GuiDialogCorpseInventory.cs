@@ -17,6 +17,8 @@ namespace DeathCorpses
 
         private readonly InventoryGeneric _inventory;
         private readonly EntityPlayerCorpse _corpse;
+        private int _renderedRows;
+        private bool _layoutRefreshQueued;
 
         public override string ToggleKeyCombinationCode => null!;
 
@@ -27,12 +29,14 @@ namespace DeathCorpses
         {
             _inventory = inventory;
             _corpse = corpse;
+            _inventory.SlotModified += OnInventorySlotModified;
             Compose();
         }
 
         private void Compose()
         {
-            int rows = Math.Max(1, (int)Math.Ceiling(_inventory.Count / (double)Columns));
+            int rows = GetVisibleRows();
+            _renderedRows = rows;
             double pad = GuiElementItemSlotGrid.unscaledSlotPadding;
 
             ElementBounds bgBounds = ElementBounds.Fill.WithFixedPadding(GuiStyle.ElementToDialogPadding);
@@ -58,6 +62,60 @@ namespace DeathCorpses
                 .AddItemSlotGrid(_inventory, DoSendPacket, Columns, slotBounds, "corpseSlots")
                 .EndChildElements()
                 .Compose();
+        }
+
+
+        private int GetVisibleRows()
+        {
+            int highestOccupiedSlot = -1;
+
+            for (int i = _inventory.Count - 1; i >= 0; i--)
+            {
+                if (!_inventory[i].Empty)
+                {
+                    highestOccupiedSlot = i;
+                    break;
+                }
+            }
+
+            int visibleSlots = Math.Max(1, highestOccupiedSlot + 1);
+            return Math.Max(1, (int)Math.Ceiling(visibleSlots / (double)Columns));
+        }
+
+        private void OnInventorySlotModified(int slotId)
+        {
+            if (_layoutRefreshQueued || !IsOpened())
+            {
+                return;
+            }
+
+            int rows = GetVisibleRows();
+            if (rows == _renderedRows)
+            {
+                return;
+            }
+
+            // Inventory packets for a single loot action can update several slots while the
+            // server compacts the corpse. Debounce those packets and recompose once using the
+            // final packed layout, so the window visibly loses empty rows as loot is removed.
+            _layoutRefreshQueued = true;
+            capi.Event.RegisterCallback((dt) =>
+            {
+                _layoutRefreshQueued = false;
+                if (!IsOpened())
+                {
+                    return;
+                }
+
+                int newRows = GetVisibleRows();
+                if (newRows == _renderedRows)
+                {
+                    return;
+                }
+
+                SingleComposer?.Dispose();
+                Compose();
+            }, 150);
         }
 
         private string GetTitle()
@@ -112,6 +170,7 @@ namespace DeathCorpses
 
         public override void OnGuiClosed()
         {
+            _inventory.SlotModified -= OnInventorySlotModified;
             base.OnGuiClosed();
             capi.World.Player.InventoryManager.CloseInventoryAndSync(_inventory);
             SingleComposer.GetSlotGrid("corpseSlots")?.OnGuiClosed(capi);

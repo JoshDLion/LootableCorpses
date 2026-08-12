@@ -141,6 +141,16 @@ namespace DeathCorpses.Entities
 
             Inventory.LateInitialize(GetCorpseInventoryId(), Api);
             Inventory.PutLocked = true;
+
+            // Keep corpse contents packed from the start. Besides looking more natural, this
+            // lets the client render only the rows that still contain loot. Do this before
+            // binding SlotModified so loading an old sparse corpse does not queue a needless
+            // persistence update for every slot we move.
+            if (Api.Side == EnumAppSide.Server)
+            {
+                CompactInventorySlots();
+            }
+
             BindInventoryEvents();
         }
 
@@ -339,9 +349,23 @@ namespace DeathCorpses.Entities
             }
 
             bool movedAnything = false;
+            IInventory? characterInventory = byPlayer.InventoryManager.GetOwnInventory(GlobalConstants.characterInvClassName);
 
             foreach (ItemSlot slot in Inventory)
             {
+                if (slot.Empty || slot.Itemstack == null)
+                {
+                    continue;
+                }
+
+                // First restore wearable equipment to its natural character slot. We only use
+                // empty destination slots and let Vintage Story's own CanHold/TryPutInto rules
+                // decide whether a stack belongs there, so existing equipment is never replaced.
+                if (TryEquipIntoCharacterSlots(slot, characterInventory))
+                {
+                    movedAnything = true;
+                }
+
                 if (slot.Empty || slot.Itemstack == null)
                 {
                     continue;
@@ -368,6 +392,7 @@ namespace DeathCorpses.Entities
 
             if (movedAnything)
             {
+                CompactInventorySlots();
                 ModLogger.Notification($"{byPlayer.PlayerName} quick-looted {GetName()}, id {EntityId}");
             }
 
@@ -375,6 +400,76 @@ namespace DeathCorpses.Entities
             {
                 RemoveEmptyCorpse();
             }
+        }
+
+        private bool TryEquipIntoCharacterSlots(ItemSlot corpseSlot, IInventory? characterInventory)
+        {
+            if (corpseSlot.Empty || characterInventory == null)
+            {
+                return false;
+            }
+
+            bool movedAnything = false;
+
+            foreach (ItemSlot equipmentSlot in characterInventory)
+            {
+                // Automatic recovery must never unequip/replace what the looter is currently
+                // wearing. If the proper slot is occupied, the item falls through to normal
+                // inventory quick-loot below.
+                if (!equipmentSlot.Empty || !equipmentSlot.CanHold(corpseSlot))
+                {
+                    continue;
+                }
+
+                int quantity = corpseSlot.StackSize;
+                int moved = corpseSlot.TryPutInto(Api.World, equipmentSlot, quantity);
+                if (moved <= 0)
+                {
+                    continue;
+                }
+
+                movedAnything = true;
+                if (corpseSlot.Empty)
+                {
+                    break;
+                }
+            }
+
+            return movedAnything;
+        }
+
+        private bool CompactInventorySlots()
+        {
+            if (Inventory == null)
+            {
+                return false;
+            }
+
+            int targetIndex = 0;
+            bool changed = false;
+
+            for (int sourceIndex = 0; sourceIndex < Inventory.Count; sourceIndex++)
+            {
+                ItemSlot sourceSlot = Inventory[sourceIndex];
+                if (sourceSlot.Empty)
+                {
+                    continue;
+                }
+
+                if (sourceIndex != targetIndex)
+                {
+                    ItemSlot targetSlot = Inventory[targetIndex];
+                    targetSlot.Itemstack = sourceSlot.Itemstack;
+                    sourceSlot.Itemstack = null;
+                    targetSlot.MarkDirty();
+                    sourceSlot.MarkDirty();
+                    changed = true;
+                }
+
+                targetIndex++;
+            }
+
+            return changed;
         }
 
         private bool CanLoot(IPlayer byPlayer)
@@ -404,14 +499,20 @@ namespace DeathCorpses.Entities
             _persistUpdateQueued = true;
             Api.Event.RegisterCallback((dt) =>
             {
-                _persistUpdateQueued = false;
                 if (_removing || Inventory == null)
                 {
+                    _persistUpdateQueued = false;
                     return;
                 }
 
+                // Pack remaining stacks toward slot zero after every partial loot. Keeping the
+                // guard set while moving them prevents our own MarkDirty calls from scheduling
+                // a second persistence callback. Clients receive the moved slots normally.
+                CompactInventorySlots();
+
                 if (Inventory.Empty)
                 {
+                    _persistUpdateQueued = false;
                     RemoveEmptyCorpse();
                     return;
                 }
@@ -419,6 +520,8 @@ namespace DeathCorpses.Entities
                 ModSystemRegistry
                     .Get<DeathContentManager>()
                     .UpdateCorpseInventoryByCorpseId(CorpseId, Inventory, ServerPos.XYZ);
+
+                _persistUpdateQueued = false;
             }, 100);
         }
 
