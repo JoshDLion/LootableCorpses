@@ -349,7 +349,18 @@ namespace DeathCorpses.Entities
             }
 
             bool movedAnything = false;
-            IInventory? characterInventory = byPlayer.InventoryManager.GetOwnInventory(GlobalConstants.characterInvClassName);
+            IInventory? characterInventory = byPlayer.InventoryManager.GetOwnInventory("character");
+            if (characterInventory == null)
+            {
+                foreach (InventoryBase inventory in byPlayer.InventoryManager.InventoriesOrdered)
+                {
+                    if (inventory.ClassName == GlobalConstants.characterInvClassName)
+                    {
+                        characterInventory = inventory;
+                        break;
+                    }
+                }
+            }
 
             foreach (ItemSlot slot in Inventory)
             {
