@@ -348,21 +348,10 @@ namespace DeathCorpses.Entities
                 return;
             }
 
-            ModLogger.Notification(
-                $"[quick-loot diagnostic] BEGIN player={byPlayer.PlayerName} corpseId={CorpseId} entityId={EntityId}");
-
             bool movedAnything = false;
             IInventory? characterInventory = byPlayer.InventoryManager.GetOwnInventory("character");
-            LogInventoryDiagnostic("GetOwnInventory(\"character\")", characterInventory);
-
             if (characterInventory == null)
             {
-                ModLogger.Notification("[quick-loot diagnostic] GetOwnInventory returned null; listing InventoriesOrdered fallback candidates");
-                foreach (InventoryBase inventory in byPlayer.InventoryManager.InventoriesOrdered)
-                {
-                    LogInventoryDiagnostic("InventoriesOrdered", inventory);
-                }
-
                 foreach (InventoryBase inventory in byPlayer.InventoryManager.InventoriesOrdered)
                 {
                     if (inventory.ClassName == GlobalConstants.characterInvClassName)
@@ -373,22 +362,12 @@ namespace DeathCorpses.Entities
                 }
             }
 
-            LogCharacterSlotsDiagnostic(characterInventory);
-
             foreach (ItemSlot slot in Inventory)
             {
                 if (slot.Empty || slot.Itemstack == null)
                 {
                     continue;
                 }
-
-                ItemStack corpseStack = slot.Itemstack;
-                int corpseSlotIndex = Inventory.GetSlotId(slot);
-                string collectibleCode = corpseStack.Collectible.Code?.ToString() ?? "<null>";
-                EnumItemStorageFlags storageFlags = corpseStack.Collectible.GetStorageFlags(corpseStack);
-                ModLogger.Notification(
-                    $"[quick-loot diagnostic] CORPSE STACK code={collectibleCode} stackSize={corpseStack.StackSize} " +
-                    $"storageFlags={storageFlags} sourceSlot={corpseSlotIndex} sourceRuntimeType={slot.GetType().FullName}");
 
                 // First restore wearable equipment to its natural character slot. We only use
                 // empty destination slots and let Vintage Story's own CanHold/TryPutInto rules
@@ -405,16 +384,7 @@ namespace DeathCorpses.Entities
 
                 ItemStack stack = slot.Itemstack;
                 int before = stack.StackSize;
-                string fallbackCode = stack.Collectible.Code?.ToString() ?? "<null>";
-                ModLogger.Notification(
-                    $"[quick-loot diagnostic] NORMAL FALLBACK TryGiveItemstack CALL code={fallbackCode} requested={before}");
                 bool acceptedWholeStack = byPlayer.InventoryManager.TryGiveItemstack(stack, true);
-                int fallbackRemaining = acceptedWholeStack ? 0 : stack.StackSize;
-                int fallbackMoved = before - fallbackRemaining;
-                ModLogger.Notification(
-                    $"[quick-loot diagnostic] NORMAL FALLBACK TryGiveItemstack RESULT code={fallbackCode} " +
-                    $"acceptedWholeStack={acceptedWholeStack} moved={fallbackMoved} remainingInCorpseSlot={fallbackRemaining} " +
-                    $"enteredNormalInventory={fallbackMoved > 0}");
 
                 if (acceptedWholeStack)
                 {
@@ -441,10 +411,6 @@ namespace DeathCorpses.Entities
             {
                 RemoveEmptyCorpse();
             }
-
-            ModLogger.Notification(
-                $"[quick-loot diagnostic] END player={byPlayer.PlayerName} corpseId={CorpseId} entityId={EntityId} " +
-                $"movedAnything={movedAnything} corpseEmpty={Inventory.Empty}");
         }
 
         private bool TryEquipIntoCharacterSlots(ItemSlot corpseSlot, IInventory? characterInventory)
@@ -455,40 +421,19 @@ namespace DeathCorpses.Entities
             }
 
             bool movedAnything = false;
-            int equipmentSlotIndex = 0;
 
             foreach (ItemSlot equipmentSlot in characterInventory)
             {
-                int currentSlotIndex = equipmentSlotIndex++;
-
                 // Automatic recovery must never unequip/replace what the looter is currently
                 // wearing. If the proper slot is occupied, the item falls through to normal
                 // inventory quick-loot below.
-                if (!equipmentSlot.Empty)
-                {
-                    continue;
-                }
-
-                bool canHold = equipmentSlot.CanHold(corpseSlot);
-                bool canTakeFrom = equipmentSlot.CanTakeFrom(corpseSlot);
-                bool sourceCanTake = corpseSlot.CanTake();
-                string characterType = equipmentSlot is ItemSlotCharacter characterSlot
-                    ? characterSlot.Type.ToString()
-                    : "n/a";
-                ModLogger.Notification(
-                    $"[quick-loot diagnostic] CHARACTER TEST slot={currentSlotIndex} type={characterType} " +
-                    $"CanHold={canHold} CanTakeFrom={canTakeFrom} sourceCanTake={sourceCanTake}");
-
-                if (!canHold)
+                if (!equipmentSlot.Empty || !equipmentSlot.CanHold(corpseSlot))
                 {
                     continue;
                 }
 
                 int quantity = corpseSlot.StackSize;
                 int moved = corpseSlot.TryPutInto(Api.World, equipmentSlot, quantity);
-                ModLogger.Notification(
-                    $"[quick-loot diagnostic] TryPutInto targetSlot={currentSlotIndex} requested={quantity} " +
-                    $"moved={moved} remainingInCorpseSlot={corpseSlot.StackSize}");
                 if (moved <= 0)
                 {
                     continue;
@@ -502,46 +447,6 @@ namespace DeathCorpses.Entities
             }
 
             return movedAnything;
-        }
-
-        private void LogInventoryDiagnostic(string source, IInventory? inventory)
-        {
-            if (inventory == null)
-            {
-                ModLogger.Notification($"[quick-loot diagnostic] {source} result=null");
-                return;
-            }
-
-            ModLogger.Notification(
-                $"[quick-loot diagnostic] {source} result=non-null InventoryID={inventory.InventoryID} " +
-                $"ClassName={inventory.ClassName} Count={inventory.Count} runtimeType={inventory.GetType().FullName}");
-        }
-
-        private void LogCharacterSlotsDiagnostic(IInventory? characterInventory)
-        {
-            if (characterInventory == null)
-            {
-                ModLogger.Notification("[quick-loot diagnostic] CHOSEN CHARACTER INVENTORY null; no character slots to list");
-                return;
-            }
-
-            ModLogger.Notification(
-                $"[quick-loot diagnostic] CHOSEN CHARACTER INVENTORY InventoryID={characterInventory.InventoryID} " +
-                $"ClassName={characterInventory.ClassName} Count={characterInventory.Count} " +
-                $"runtimeType={characterInventory.GetType().FullName}");
-
-            int slotIndex = 0;
-            foreach (ItemSlot slot in characterInventory)
-            {
-                bool isCharacterSlot = slot is ItemSlotCharacter;
-                string characterType = slot is ItemSlotCharacter characterSlot
-                    ? characterSlot.Type.ToString()
-                    : "n/a";
-                ModLogger.Notification(
-                    $"[quick-loot diagnostic] CHARACTER SLOT index={slotIndex} runtimeType={slot.GetType().FullName} " +
-                    $"isItemSlotCharacter={isCharacterSlot} empty={slot.Empty} StorageType={slot.StorageType} Type={characterType}");
-                slotIndex++;
-            }
         }
 
         private bool CompactInventorySlots()
