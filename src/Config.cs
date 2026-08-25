@@ -31,7 +31,7 @@ namespace DeathCorpses
         public int MaxCorpsesSavedPerPlayer { get; set; } = 10;
 
         [Description("Auto mode will try to resolve conflicts with other mods")]
-        public CreateWaypointMode CreateWaypoint { get; set; } = CreateWaypointMode.Auto;
+        public CreateWaypointMode CreateWaypoint { get; set; } = CreateWaypointMode.Always;
         public enum CreateWaypointMode { Auto, Always, None };
 
         [Description("circle, bee, cave, home, ladder, pick, rocks, ruins, spiral, star1, star2, trader, vessel, etc")]

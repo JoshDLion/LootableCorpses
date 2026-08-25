@@ -61,5 +61,25 @@
   "death-recap-source-Suicide": "self",
   "death-recap-source-Unknown": "unknown cause",
   "death-recap-source-Machine": "machine",
-  "death-recap-source-Player": "player"
+  "death-recap-source-Player": "player",
+
+  "corpse-list-title": "Admin transport",
+  "corpse-list-source": "Source:",
+  "corpse-list-no-online-players": "No online players.",
+  "corpse-list-empty": "No valid persistent corpses found.",
+  "corpse-list-owner": "☠ Corpse of {0}",
+  "corpse-list-details": "Death: {0} · Distance: {1}",
+  "corpse-list-map": "View map",
+  "corpse-list-teleport": "Teleport",
+  "corpse-list-previous": "Previous",
+  "corpse-list-next": "Next",
+  "corpse-list-page": "Page {0} / {1}",
+  "corpse-list-kilometers": "{0:0.0} km",
+  "corpse-list-blocks": "{0:0} blocks",
+  "corpse-list-map-unavailable": "The world map is not available.",
+  "corpse-list-source-offline": "The selected source player is offline.",
+  "corpse-list-corpse-missing": "The selected corpse no longer exists.",
+  "corpse-list-invalid-request": "Invalid corpse transport request.",
+  "corpse-list-power-required": "Administrator privileges are required for corpse transport.",
+  "corpse-list-hotkey": "Open corpse list"
 }

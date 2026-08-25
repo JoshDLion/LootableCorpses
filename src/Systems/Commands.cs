@@ -31,9 +31,15 @@ namespace DeathCorpses.Systems
             var parsers = api.ChatCommands.Parsers;
             api.ChatCommands
                 .Create("dc")
-                .RequiresPrivilege(Core.Config.CommandPrivilege)
-                .WithDescription("DeathCorpses admin commands")
+                .RequiresPrivilege(Privilege.chat)
+                .WithDescription("DeathCorpses commands")
+                .BeginSubCommand("corpses")
+                    .RequiresPrivilege(Privilege.root)
+                    .WithDescription("Open the admin corpse transport list")
+                    .HandleWith(OpenCorpseList)
+                .EndSubCommand()
                 .BeginSubCommand("corpse")
+                    .RequiresPrivilege(Core.Config.CommandPrivilege)
                     .WithDescription("Manage saved corpses")
                     .BeginSubCommand("list")
                         .WithArgs(parsers.Player("player", api))
@@ -82,6 +88,7 @@ namespace DeathCorpses.Systems
                     .EndSubCommand()
                 .EndSubCommand()
                 .BeginSubCommand("recap")
+                    .RequiresPrivilege(Core.Config.CommandPrivilege)
                     .WithDescription("Manage pending death recaps")
                     .BeginSubCommand("clear")
                         .WithDescription("Remove all pending death recaps from memory and disk")
@@ -89,6 +96,7 @@ namespace DeathCorpses.Systems
                     .EndSubCommand()
                 .EndSubCommand()
                 .BeginSubCommand("config")
+                    .RequiresPrivilege(Core.Config.CommandPrivilege)
                     .WithDescription("View or change config settings")
                     .BeginSubCommand("list")
                         .HandleWith(ConfigList)
@@ -102,6 +110,17 @@ namespace DeathCorpses.Systems
                         .HandleWith(ConfigSet)
                     .EndSubCommand()
                 .EndSubCommand();
+        }
+
+        private TextCommandResult OpenCorpseList(TextCommandCallingArgs args)
+        {
+            if (args.Caller.Player is not IServerPlayer player)
+            {
+                return TextCommandResult.Error(Lang.Get("You must be in-game to view corpses"));
+            }
+
+            ModSystemRegistry.Get<CorpseListSystem>().SendCorpseList(player);
+            return TextCommandResult.Success();
         }
 
         // --- Coordinate helpers ---
@@ -271,14 +290,14 @@ namespace DeathCorpses.Systems
 
         // --- Teleport to corpse ---
 
-        private void TeleportPlayerToCorpseEntity(IServerPlayer targetPlayer, EntityPlayerCorpse corpse, IPlayer corpseOwner, int id)
+        private void TeleportPlayerToCorpseEntity(IServerPlayer targetPlayer, EntityPlayerCorpse corpse, string corpseOwnerName, string corpseLabel)
         {
             Vec3d teleportPos = corpse.ServerPos.XYZ;
             targetPlayer.Entity.TeleportTo(teleportPos);
             var (rx, ry, rz) = AbsToRelative(teleportPos);
             targetPlayer.SendMessage(0, Lang.Get(
                 "Teleported {0} to corpse {1} of {2} at {3}, {4}, {5}",
-                targetPlayer.PlayerName, id, corpseOwner.PlayerName,
+                targetPlayer.PlayerName, corpseLabel, corpseOwnerName,
                 rx, ry, rz), EnumChatType.CommandSuccess);
         }
 
@@ -303,46 +322,125 @@ namespace DeathCorpses.Systems
                     targetPlayer.PlayerName));
             }
 
-            string filePath = files[id];
-            string? corpseId = _deathContentManager.LoadCorpseId(filePath);
+            return TeleportPlayerToCorpseFile(
+                targetPlayer,
+                corpseOwner.PlayerName,
+                files[id],
+                id.ToString(),
+                allowSavedPositionFallback: true,
+                onAsyncError: null);
+        }
+
+        private TextCommandResult TeleportPlayerToCorpseFile(
+            IServerPlayer targetPlayer,
+            string corpseOwnerName,
+            string filePath,
+            string corpseLabel,
+            bool allowSavedPositionFallback,
+            Action<string>? onAsyncError)
+        {
+            if (!_sapi.World.AllOnlinePlayers.Contains(targetPlayer) || targetPlayer.Entity == null)
+            {
+                return TextCommandResult.Error(Lang.Get(
+                    "Player {0} is offline or not fully loaded.",
+                    targetPlayer.PlayerName));
+            }
+
+            string? corpseId;
+            BlockPos? pos;
+            try
+            {
+                if (!File.Exists(filePath))
+                {
+                    return TextCommandResult.Error(Lang.Get("Corpse no longer exists"));
+                }
+
+                corpseId = _deathContentManager.LoadCorpseId(filePath);
+                pos = _deathContentManager.LoadCorpsePosition(filePath);
+            }
+            catch (Exception ex)
+            {
+                Mod.Logger.Warning($"Unable to resolve corpse '{corpseLabel}': {ex.Message}");
+                return TextCommandResult.Error(Lang.Get("Corpse no longer exists"));
+            }
+
+            if (string.IsNullOrWhiteSpace(corpseId))
+            {
+                return TextCommandResult.Error(Lang.Get("Could not locate corpse {0}", corpseLabel));
+            }
 
             // Try to find the entity already loaded
-            EntityPlayerCorpse? corpseEntity = corpseId != null ? FindCorpseEntity(corpseId) : null;
+            EntityPlayerCorpse? corpseEntity = FindCorpseEntity(corpseId);
             if (corpseEntity != null)
             {
-                TeleportPlayerToCorpseEntity(targetPlayer, corpseEntity, corpseOwner, id);
+                TeleportPlayerToCorpseEntity(targetPlayer, corpseEntity, corpseOwnerName, corpseLabel);
                 return TextCommandResult.Success();
             }
 
             // Entity not loaded — load the chunk, then teleport to live entity position
-            BlockPos? pos = _deathContentManager.LoadCorpsePosition(filePath);
             if (pos == null)
             {
-                return TextCommandResult.Error(Lang.Get("Corpse {0} has no saved position", id));
+                return TextCommandResult.Error(Lang.Get("Corpse {0} has no saved position", corpseLabel));
             }
 
             LoadChunkThen(pos, () =>
             {
-                EntityPlayerCorpse? loadedCorpse = corpseId != null ? FindCorpseEntity(corpseId) : null;
+                if (!_sapi.World.AllOnlinePlayers.Contains(targetPlayer) || targetPlayer.Entity == null)
+                {
+                    onAsyncError?.Invoke(Lang.Get(
+                        "Player {0} is offline or not fully loaded.",
+                        targetPlayer.PlayerName));
+                    return;
+                }
+
+                if (!allowSavedPositionFallback && !_deathContentManager.CorpseExistsOnDisk(corpseId))
+                {
+                    string message = Lang.Get("Corpse no longer exists");
+                    targetPlayer.SendMessage(0, message, EnumChatType.CommandError);
+                    onAsyncError?.Invoke(message);
+                    return;
+                }
+
+                EntityPlayerCorpse? loadedCorpse = FindCorpseEntity(corpseId);
                 if (loadedCorpse != null)
                 {
-                    TeleportPlayerToCorpseEntity(targetPlayer, loadedCorpse, corpseOwner, id);
+                    TeleportPlayerToCorpseEntity(targetPlayer, loadedCorpse, corpseOwnerName, corpseLabel);
                 }
-                else
+                else if (allowSavedPositionFallback)
                 {
                     // Last resort: use saved position
                     targetPlayer.Entity.TeleportTo(pos.ToVec3d().Add(0.5, 0, 0.5));
                     var (rx, ry, rz) = AbsToRelative(pos);
                     targetPlayer.SendMessage(0, Lang.Get(
                         "Teleported {0} to corpse {1} of {2} at {3}, {4}, {5} (saved position)",
-                        targetPlayer.PlayerName, id, corpseOwner.PlayerName,
+                        targetPlayer.PlayerName, corpseLabel, corpseOwnerName,
                         rx, ry, rz), EnumChatType.CommandSuccess);
+                }
+                else
+                {
+                    string message = Lang.Get("Corpse no longer exists");
+                    targetPlayer.SendMessage(0, message, EnumChatType.CommandError);
+                    onAsyncError?.Invoke(message);
                 }
             });
 
             return TextCommandResult.Success(Lang.Get(
                 "Teleporting {0} to corpse {1} of {2}",
-                targetPlayer.PlayerName, id, corpseOwner.PlayerName));
+                targetPlayer.PlayerName, corpseLabel, corpseOwnerName));
+        }
+
+        public TextCommandResult TeleportPlayerToCorpseRecord(
+            IServerPlayer targetPlayer,
+            DeathContentManager.CorpseRecord record,
+            Action<string>? onAsyncError = null)
+        {
+            return TeleportPlayerToCorpseFile(
+                targetPlayer,
+                record.OwnerName,
+                record.FilePath,
+                record.DeathDateText,
+                allowSavedPositionFallback: false,
+                onAsyncError);
         }
 
         private TextCommandResult TeleportToCorpse(TextCommandCallingArgs args)

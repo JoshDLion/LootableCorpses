@@ -6,6 +6,7 @@ using DeathCorpses.Entities;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -975,6 +976,125 @@ namespace DeathCorpses.Systems
             public string CorpseId { get; set; } = "";
             public string OwnerName { get; set; } = "";
             public BlockPos Position { get; set; } = new();
+            public string DeathDateText { get; set; } = "";
+            public string FilePath { get; set; } = "";
+        }
+
+        public List<CorpseRecord> GetAllCorpseRecords()
+        {
+            var records = new List<CorpseRecord>();
+            string basePath = _sapi.GetOrCreateDataPath(
+                Path.Combine("ModData", _sapi.World.SavegameIdentifier, Mod.Info.ModID));
+
+            if (!Directory.Exists(basePath))
+            {
+                return records;
+            }
+
+            foreach (string playerDir in Directory.GetDirectories(basePath))
+            {
+                string directoryUid = Path.GetFileName(playerDir);
+                string ownerName = ResolvePlayerNameFromDirectory(directoryUid) ?? directoryUid;
+
+                foreach (string file in Directory
+                    .GetFiles(playerDir, "inventory-*.dat")
+                    .OrderByDescending(path => Path.GetFileName(path)))
+                {
+                    CorpseRecord? record = LoadCorpseRecord(ownerName, file);
+                    if (record != null)
+                    {
+                        records.Add(record);
+                    }
+                }
+            }
+            return records;
+        }
+
+        public CorpseRecord? GetCorpseRecord(string corpseId)
+        {
+            if (string.IsNullOrWhiteSpace(corpseId))
+            {
+                return null;
+            }
+
+            if (!_corpseFilesById.TryGetValue(corpseId, out string? file) || !File.Exists(file))
+            {
+                file = FindCorpseSaveFileByCorpseId(corpseId);
+                if (file == null)
+                {
+                    return null;
+                }
+                _corpseFilesById[corpseId] = file;
+            }
+
+            string directoryUid = Path.GetFileName(Path.GetDirectoryName(file)) ?? "";
+            string ownerName = ResolvePlayerNameFromDirectory(directoryUid) ?? directoryUid;
+            return LoadCorpseRecord(ownerName, file);
+        }
+
+        private CorpseRecord? LoadCorpseRecord(string ownerName, string file)
+        {
+            try
+            {
+                var tree = LoadAndMigrateTree(file);
+                string? corpseId = tree.GetString("corpseId");
+                if (string.IsNullOrWhiteSpace(corpseId) || !_knownCorpseIds.Contains(corpseId))
+                {
+                    return null;
+                }
+
+                if (!tree.HasAttribute("graveX"))
+                {
+                    return null;
+                }
+
+                string timestampText = Path.GetFileNameWithoutExtension(file);
+                const string prefix = "inventory-";
+                if (timestampText.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    timestampText = timestampText[prefix.Length..];
+                }
+
+                if (DateTime.TryParseExact(
+                    timestampText,
+                    "yyyy-MM-dd-HH-mm-ss",
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.None,
+                    out DateTime timestamp))
+                {
+                    timestampText = timestamp.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+                }
+
+                return new CorpseRecord
+                {
+                    CorpseId = corpseId,
+                    OwnerName = ownerName,
+                    Position = new BlockPos(
+                        tree.GetInt("graveX"),
+                        tree.GetInt("graveY"),
+                        tree.GetInt("graveZ")),
+                    DeathDateText = timestampText,
+                    FilePath = file
+                };
+            }
+            catch (Exception ex)
+            {
+                Mod.Logger.Warning($"Skipping unreadable corpse record '{Path.GetFileName(file)}': {ex.Message}");
+                return null;
+            }
+        }
+
+        private string? ResolvePlayerNameFromDirectory(string directoryUid)
+        {
+            foreach (var player in _sapi.World.AllPlayers)
+            {
+                string sanitizedUid = Regex.Replace(player.PlayerUID, "[^0-9a-zA-Z]", "");
+                if (string.Equals(sanitizedUid, directoryUid, StringComparison.Ordinal))
+                {
+                    return player.PlayerName;
+                }
+            }
+            return null;
         }
 
         /// <summary>

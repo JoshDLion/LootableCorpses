@@ -38,10 +38,11 @@ A single zip works on both versions — the mod auto-detects the runtime at star
 
 ### Commands
 
-All commands require the privilege configured in `CommandPrivilege` (default: `gamemode`).
+`/dc corpses` is an administrative transport interface and requires the `power` privilege. Other administrative commands require the privilege configured in `CommandPrivilege` (default: `gamemode`).
 
 | Command | Description |
 |---|---|
+| `/dc corpses` | Opens the native admin transport GUI for all persistent corpses; requires `power` |
 | `/dc corpse list <player>` | Lists all saved corpses for a player, numbered by date |
 | `/dc corpse get <player> <give to player> [id]` | Restores a corpse's inventory to a player. `id` is the index from `list` (default: `0`, most recent) |
 | `/dc corpse remove <player> [id]` | Removes corpses for a player. If `id` is given, only that saved corpse is removed. Without `id`, deletes all saved corpses and despawns any corpse entities in the world |
@@ -54,6 +55,8 @@ All commands require the privilege configured in `CommandPrivilege` (default: `g
 | `/dc config get <option>` | Shows the current value of a specific config option |
 | `/dc config set <option> <value>` | Changes a config option at runtime and saves it to disk |
 
+The client also registers an unbound `Open corpse list` hotkey. It can be assigned in the controls settings and only works for players with `power`.
+
 ### Configuration
 
 The config file is created at `ModConfig/deathcorpses.json` on first run. All settings are server-side.
@@ -64,9 +67,9 @@ The config file is created at `ModConfig/deathcorpses.json` on first run. All se
 | `HasHealth` | `false` | Whether the corpse has 100 HP and can be broken by other players |
 | `CreateCorpse` | `true` | Whether a corpse entity is spawned at all. If false, items are dropped on the ground |
 | `SaveInventoryTypes` | hotbar, backpack, crafting, cursor, character | Which inventory slots are saved into the corpse |
-| `CommandPrivilege` | `gamemode` | Privilege required to use `/dc` commands |
+| `CommandPrivilege` | `gamemode` | Privilege required to use administrative `/dc` commands |
 | `MaxCorpsesSavedPerPlayer` | `10` | How many corpses to keep on disk per player (for `/dc corpse`) |
-| `CreateWaypoint` | `Auto` | Whether to create a death waypoint. `Auto` disables it if another mod already handles death waypoints, `Always` forces it, `None` disables it |
+| `CreateWaypoint` | `Always` | Whether to create a death waypoint. `Auto` disables it if another mod already handles death waypoints, `Always` forces it, `None` disables it |
 | `WaypointIcon` | `bee` | Icon for the death waypoint. Options: `circle`, `bee`, `cave`, `home`, `ladder`, `pick`, `rocks`, `ruins`, `spiral`, `star1`, `star2`, `trader`, `vessel`, etc. |
 | `WaypointColor` | `crimson` | Color for the death waypoint. Accepts .NET color names (see [99colors.net](https://www.99colors.net/dot-net-colors)) |
 | `PinWaypoint` | `true` | Whether the death waypoint is pinned on the map |
