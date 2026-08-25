@@ -81,5 +81,7 @@
   "corpse-list-corpse-missing": "The selected corpse no longer exists.",
   "corpse-list-invalid-request": "Invalid corpse transport request.",
   "corpse-list-power-required": "Administrator privileges are required for corpse transport.",
-  "corpse-list-hotkey": "Open corpse list"
+  "corpse-list-hotkey": "Open corpse list",
+  "corpse-list-fetch": "Fetch",
+  "corpse-list-fetch-success": "Fetched corpse of {0} to {1}."
 }

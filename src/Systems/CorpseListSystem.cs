@@ -27,6 +27,16 @@ namespace DeathCorpses.Systems
     }
 
     [ProtoContract]
+    public sealed class CorpseFetchRequest
+    {
+        [ProtoMember(1)]
+        public string SourcePlayerUid { get; set; } = "";
+
+        [ProtoMember(2)]
+        public string CorpseId { get; set; } = "";
+    }
+
+    [ProtoContract]
     public sealed class CorpseMapRequest
     {
         [ProtoMember(1)]
@@ -106,6 +116,7 @@ namespace DeathCorpses.Systems
                 .RegisterMessageType<CorpseListRequest>()
                 .RegisterMessageType<CorpseListResponse>()
                 .RegisterMessageType<CorpseTeleportRequest>()
+                .RegisterMessageType<CorpseFetchRequest>()
                 .RegisterMessageType<CorpseMapRequest>()
                 .RegisterMessageType<CorpseMapResponse>();
         }
@@ -118,7 +129,8 @@ namespace DeathCorpses.Systems
                 .SetMessageHandler<CorpseListRequest>((player, packet) =>
                     SendCorpseList(player, packet.SourcePlayerUid))
                 .SetMessageHandler<CorpseMapRequest>(HandleMapRequest)
-                .SetMessageHandler<CorpseTeleportRequest>(HandleTeleportRequest);
+                .SetMessageHandler<CorpseTeleportRequest>(HandleTeleportRequest)
+                .SetMessageHandler<CorpseFetchRequest>(HandleFetchRequest);
         }
 
         public override void StartClientSide(ICoreClientAPI api)
@@ -272,6 +284,115 @@ namespace DeathCorpses.Systems
             }
         }
 
+        private void HandleFetchRequest(
+            IServerPlayer admin,
+            CorpseFetchRequest packet)
+        {
+            if (!RequireRoot(admin) || _sapi == null)
+            {
+                return;
+            }
+
+            if (!ValidIdentifier(packet.SourcePlayerUid) ||
+                !ValidIdentifier(packet.CorpseId))
+            {
+                SendError(
+                    admin,
+                    Lang.Get(
+                        "deathcorpses:corpse-list-invalid-request"));
+                return;
+            }
+
+            IServerPlayer? source = _sapi.World.AllOnlinePlayers
+                .OfType<IServerPlayer>()
+                .FirstOrDefault(player =>
+                    string.Equals(
+                        player.PlayerUID,
+                        packet.SourcePlayerUid,
+                        StringComparison.Ordinal));
+
+            if (source?.Entity == null)
+            {
+                string message = Lang.Get(
+                    "deathcorpses:corpse-list-source-offline");
+
+                SendError(admin, message);
+                SendCorpseList(admin, null, message);
+                return;
+            }
+
+            DeathContentManager.CorpseRecord? record =
+                ModSystemRegistry
+                    .Get<DeathContentManager>()
+                    .GetCorpseRecord(packet.CorpseId);
+
+            if (record == null)
+            {
+                string message = Lang.Get(
+                    "deathcorpses:corpse-list-corpse-missing");
+
+                SendError(admin, message);
+
+                SendCorpseList(
+                    admin,
+                    source.PlayerUID,
+                    message);
+
+                return;
+            }
+
+            // Snapshot server-side of the selected source player's
+            // current position. The client never supplies coordinates.
+            Vec3d targetPos =
+                source.Entity.ServerPos.XYZ.Clone();
+
+            TextCommandResult result = ModSystemRegistry
+                .Get<Commands>()
+                .FetchCorpseRecordToPosition(
+                    record,
+                    targetPos,
+                    onSuccess: () =>
+                    {
+                        string message = Lang.Get(
+                            "deathcorpses:corpse-list-fetch-success",
+                            record.OwnerName,
+                            source.PlayerName);
+
+                        Mod.Logger.Notification(
+                            $"[AdminTransport] {admin.PlayerName} fetched " +
+                            $"corpse {record.CorpseId} of {record.OwnerName} " +
+                            $"to {source.PlayerName}");
+
+                        admin.SendMessage(
+                            0,
+                            message,
+                            EnumChatType.CommandSuccess);
+
+                        SendCorpseList(
+                            admin,
+                            source.PlayerUID,
+                            message);
+                    },
+                    onAsyncError: message =>
+                    {
+                        SendError(admin, message);
+
+                        SendCorpseList(
+                            admin,
+                            source.PlayerUID,
+                            message);
+                    });
+
+            if (result.Status == EnumCommandStatus.Error)
+            {
+                SendError(admin, result.StatusMessage);
+
+                SendCorpseList(
+                    admin,
+                    source.PlayerUID,
+                    result.StatusMessage);
+            }
+        }
         private bool RequireRoot(IServerPlayer player)
         {
             if (player.HasPrivilege(Privilege.root))
@@ -323,6 +444,11 @@ namespace DeathCorpses.Systems
                     CorpseId = corpseId
                 }),
                 (sourcePlayerUid, corpseId) => _clientChannel?.SendPacket(new CorpseTeleportRequest
+                {
+                    SourcePlayerUid = sourcePlayerUid,
+                    CorpseId = corpseId
+                }),
+                (sourcePlayerUid, corpseId) => _clientChannel?.SendPacket(new CorpseFetchRequest
                 {
                     SourcePlayerUid = sourcePlayerUid,
                     CorpseId = corpseId

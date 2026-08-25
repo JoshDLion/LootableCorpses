@@ -468,69 +468,185 @@ namespace DeathCorpses.Systems
 
         // --- Fetch corpse ---
 
-        private TextCommandResult FetchCorpseToPosition(IPlayer corpseOwner, int id, Vec3d targetPos, IServerPlayer? caller)
+        private TextCommandResult FetchCorpseFileToPosition(
+            string filePath,
+            string corpseId,
+            string corpseOwnerName,
+            string corpseLabel,
+            Vec3d targetPos,
+            Action? onSuccess = null,
+            Action<string>? onAsyncError = null)
         {
-            string[] files = _deathContentManager.GetDeathDataFiles(corpseOwner);
+            if (!File.Exists(filePath))
+            {
+                return TextCommandResult.Error(Lang.Get("Corpse no longer exists"));
+            }
+
+            Vec3d destination = targetPos.Clone();
+
+            EntityPlayerCorpse? corpseEntity = FindCorpseEntity(corpseId);
+            if (corpseEntity != null)
+            {
+                corpseEntity.TeleportTo(destination);
+                _deathContentManager.UpdateCorpsePosition(filePath, destination);
+                onSuccess?.Invoke();
+
+                var (rx, ry, rz) = AbsToRelative(destination);
+                return TextCommandResult.Success(Lang.Get(
+                    "Fetching corpse {0} of {1} to {2}, {3}, {4}",
+                    corpseLabel, corpseOwnerName, rx, ry, rz));
+            }
+
+            BlockPos? oldPos;
+            try
+            {
+                oldPos = _deathContentManager.LoadCorpsePosition(filePath);
+            }
+            catch (Exception ex)
+            {
+                Mod.Logger.Warning(
+                    $"Unable to resolve corpse '{corpseLabel}' for fetch: {ex.Message}");
+
+                return TextCommandResult.Error(
+                    Lang.Get("Corpse no longer exists"));
+            }
+
+            if (oldPos == null)
+            {
+                return TextCommandResult.Error(
+                    Lang.Get(
+                        "Corpse {0} has no saved position",
+                        corpseLabel));
+            }
+
+            LoadChunkThen(oldPos, () =>
+            {
+                if (!File.Exists(filePath))
+                {
+                    onAsyncError?.Invoke(
+                        Lang.Get("Corpse no longer exists"));
+                    return;
+                }
+
+                EntityPlayerCorpse? loadedCorpse =
+                    FindCorpseEntity(corpseId);
+
+                if (loadedCorpse == null)
+                {
+                    onAsyncError?.Invoke(
+                        Lang.Get("Corpse no longer exists"));
+                    return;
+                }
+
+                try
+                {
+                    loadedCorpse.TeleportTo(destination);
+                    _deathContentManager.UpdateCorpsePosition(
+                        filePath,
+                        destination);
+
+                    onSuccess?.Invoke();
+                }
+                catch (Exception ex)
+                {
+                    Mod.Logger.Warning(
+                        $"Unable to fetch corpse '{corpseLabel}': {ex.Message}");
+
+                    onAsyncError?.Invoke(
+                        Lang.Get("Corpse no longer exists"));
+                }
+            });
+
+            var (frx, fry, frz) = AbsToRelative(destination);
+            return TextCommandResult.Success(Lang.Get(
+                "Fetching corpse {0} of {1} to {2}, {3}, {4}",
+                corpseLabel, corpseOwnerName, frx, fry, frz));
+        }
+
+        public TextCommandResult FetchCorpseRecordToPosition(
+            DeathContentManager.CorpseRecord record,
+            Vec3d targetPos,
+            Action? onSuccess = null,
+            Action<string>? onAsyncError = null)
+        {
+            return FetchCorpseFileToPosition(
+                record.FilePath,
+                record.CorpseId,
+                record.OwnerName,
+                record.DeathDateText,
+                targetPos,
+                onSuccess,
+                onAsyncError);
+        }
+
+        private TextCommandResult FetchCorpseToPosition(
+            IPlayer corpseOwner,
+            int id,
+            Vec3d targetPos,
+            IServerPlayer? caller)
+        {
+            string[] files =
+                _deathContentManager.GetDeathDataFiles(corpseOwner);
 
             if (files.Length == 0)
             {
-                return TextCommandResult.Error(Lang.Get("No saved corpses found"));
+                return TextCommandResult.Error(
+                    Lang.Get("No saved corpses found"));
             }
 
             if (id < 0 || id >= files.Length)
             {
-                return TextCommandResult.Error(Lang.Get("Index {0} not found", id));
+                return TextCommandResult.Error(
+                    Lang.Get("Index {0} not found", id));
             }
 
             string filePath = files[id];
-            string? corpseId = _deathContentManager.LoadCorpseId(filePath);
+            string? corpseId =
+                _deathContentManager.LoadCorpseId(filePath);
+
             if (corpseId == null)
             {
-                BlockPos? lastPos = _deathContentManager.LoadCorpsePosition(filePath);
+                BlockPos? lastPos =
+                    _deathContentManager.LoadCorpsePosition(filePath);
+
                 string posInfo = "";
+
                 if (lastPos != null)
                 {
                     var (rx, ry, rz) = AbsToRelative(lastPos);
-                    posInfo = Lang.Get(" Last seen at {0}, {1}, {2}", rx, ry, rz);
+
+                    posInfo = Lang.Get(
+                        " Last seen at {0}, {1}, {2}",
+                        rx, ry, rz);
                 }
-                return TextCommandResult.Error(Lang.Get("Could not locate corpse {0}.{1}", id, posInfo));
+
+                return TextCommandResult.Error(
+                    Lang.Get(
+                        "Could not locate corpse {0}.{1}",
+                        id,
+                        posInfo));
             }
 
-            // Try to find and teleport the corpse in already-loaded entities first
-            EntityPlayerCorpse? corpseEntity = FindCorpseEntity(corpseId);
-            if (corpseEntity != null)
+            Action<string>? onAsyncError = null;
+
+            if (caller != null)
             {
-                corpseEntity.TeleportTo(targetPos);
-                _deathContentManager.UpdateCorpsePosition(filePath, targetPos);
-                var (rx, ry, rz) = AbsToRelative(targetPos);
-                return TextCommandResult.Success(Lang.Get(
-                    "Fetching corpse {0} of {1} to {2}, {3}, {4}",
-                    id, corpseOwner.PlayerName, rx, ry, rz));
+                onAsyncError = message =>
+                    caller.SendMessage(
+                        0,
+                        message,
+                        EnumChatType.CommandError);
             }
 
-            // Corpse not in a loaded chunk — load the chunk using saved position and retry
-            BlockPos? pos = _deathContentManager.LoadCorpsePosition(filePath);
-            if (pos == null)
-            {
-                return TextCommandResult.Error(Lang.Get("Corpse {0} has no saved position", id));
-            }
-
-            LoadChunkThen(pos, () =>
-            {
-                EntityPlayerCorpse? loadedCorpse = FindCorpseEntity(corpseId);
-                if (loadedCorpse != null)
-                {
-                    loadedCorpse.TeleportTo(targetPos);
-                    _deathContentManager.UpdateCorpsePosition(filePath, targetPos);
-                }
-            });
-
-            var (frx, fry, frz) = AbsToRelative(targetPos);
-            return TextCommandResult.Success(Lang.Get(
-                "Fetching corpse {0} of {1} to {2}, {3}, {4}",
-                id, corpseOwner.PlayerName, frx, fry, frz));
+            return FetchCorpseFileToPosition(
+                filePath,
+                corpseId,
+                corpseOwner.PlayerName,
+                id.ToString(),
+                targetPos,
+                onSuccess: null,
+                onAsyncError: onAsyncError);
         }
-
         private TextCommandResult FetchCorpse(TextCommandCallingArgs args)
         {
             IPlayer player = (IPlayer)args[0];

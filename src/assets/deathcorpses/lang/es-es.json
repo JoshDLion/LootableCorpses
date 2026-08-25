@@ -53,5 +53,7 @@
     "corpse-list-corpse-missing": "El cadáver seleccionado ya no existe.",
     "corpse-list-invalid-request": "Solicitud de transporte a cadáver no válida.",
     "corpse-list-power-required": "Se requieren privilegios de administrador para transportar a cadáveres.",
-    "corpse-list-hotkey": "Abrir lista de cadáveres"
+    "corpse-list-hotkey": "Abrir lista de cadáveres",
+  "corpse-list-fetch": "Traer",
+  "corpse-list-fetch-success": "Cadáver de {0} traído hasta {1}."
 }

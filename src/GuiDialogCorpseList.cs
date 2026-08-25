@@ -18,6 +18,7 @@ namespace DeathCorpses
         private readonly Action<string> _selectSource;
         private readonly Action<string> _showOnMap;
         private readonly Action<string, string> _teleport;
+        private readonly Action<string, string> _fetch;
         private int _page;
 
         public override string ToggleKeyCombinationCode => "deathcorpses-corpse-list";
@@ -27,7 +28,8 @@ namespace DeathCorpses
             ICoreClientAPI capi,
             Action<string> selectSource,
             Action<string> showOnMap,
-            Action<string, string> teleport) : base(capi)
+            Action<string, string> teleport,
+            Action<string, string> fetch) : base(capi)
         {
             _sources = response.Sources ?? [];
             _corpses = response.Corpses ?? [];
@@ -36,6 +38,7 @@ namespace DeathCorpses
             _selectSource = selectSource;
             _showOnMap = showOnMap;
             _teleport = teleport;
+            _fetch = fetch;
             Compose();
         }
 
@@ -132,7 +135,13 @@ namespace DeathCorpses
                             () => Teleport(corpse),
                             ElementBounds.Fixed(500, y + 12, 90, 30),
                             EnumButtonStyle.Small,
-                            $"teleport-{index}");
+                            $"teleport-{index}")
+                        .AddSmallButton(
+                            Lang.Get("deathcorpses:corpse-list-fetch"),
+                            () => Fetch(corpse),
+                            ElementBounds.Fixed(600, y + 12, 90, 30),
+                            EnumButtonStyle.Small,
+                            $"fetch-{index}");
                 }
             }
 
@@ -200,6 +209,19 @@ namespace DeathCorpses
             {
                 _teleport(_selectedSourcePlayerUid, corpse.CorpseId);
             }
+            return true;
+        }
+
+        private bool Fetch(CorpseListEntry corpse)
+        {
+            if (!string.IsNullOrWhiteSpace(
+                _selectedSourcePlayerUid))
+            {
+                _fetch(
+                    _selectedSourcePlayerUid,
+                    corpse.CorpseId);
+            }
+
             return true;
         }
 
